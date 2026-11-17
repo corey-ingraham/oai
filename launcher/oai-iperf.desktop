@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=iperf3
+Comment=Throughput tests: OAI UE tunnel, client to any host, or a local server
+Exec=qterminal -e /usr/local/bin/oai-iperf
+Icon=oai-iperf
+Terminal=false
+StartupNotify=true
+Categories=Network;Utility;
+Keywords=iperf;throughput;bandwidth;5G;

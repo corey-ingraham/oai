@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# oai-launch - menu for running OpenAirInterface 5G on this PC (taskbar launcher target).
+# Installed to /usr/local/bin by ./install.sh. Runs as the desktop user; asks sudo only for
+# the softmodems (they need real-time scheduling and the tun device) and for CPU tuning.
+#
+# Every long-running part opens in its own terminal window and is logged to $LOG_DIR.
+set -uo pipefail   # no -e: a failed menu action must not close the menu
+
+OAI_SRC="${OAI_SRC:-$HOME/src/openairinterface5g}"
+BUILD="$OAI_SRC/cmake_targets/ran_build/build"
+CONF="$OAI_SRC/targets/PROJECTS/GENERIC-NR-5GC/CONF"
+GNB_CONF="$CONF/gnb.sa.band78.fr1.106PRB.usrpb210.conf"
+CN5G="$OAI_SRC/doc/tutorial_resources/oai-cn5g/docker-compose.yaml"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/oai"
+EXT_DN=192.168.70.135
+# Test subscriber from OAI's own tutorial database (doc/tutorial_resources/oai-cn5g/database).
+UE_IMSI=001010000000001
+UE_ARGS=(-r 106 --numerology 1 --band 78 -C 3619200000 --uicc0.imsi "$UE_IMSI")
+GNB_ARGS=(-O "$GNB_CONF" "--gNBs.[0].min_rxtxtime" 6)
+
+mkdir -p "$LOG_DIR"
+B=$'\033[1m'; G=$'\033[32m'; R=$'\033[31m'; Y=$'\033[33m'; N=$'\033[0m'
+
+# docker without sudo once the user is in the docker group; until re-login, fall back to sudo.
+docker_cmd() { if docker info >/dev/null 2>&1; then docker "$@"; else sudo docker "$@"; fi; }
+compose()    { docker_cmd compose -f "$CN5G" "$@"; }
+
+# win TITLE LOGNAME CMD...: run a command in a new terminal window, logged; window stays open after exit.
+win() {
+    local title="$1" log="$LOG_DIR/$2.log"; shift 2
+    local cmd; cmd="$(printf '%q ' "$@")"
+    qterminal --title "$title" -e bash -c "cd $(printf %q "$BUILD") && { $cmd; } 2>&1 | tee $(printf %q "$log"); echo; read -rp '[exited - Enter closes this window] '" &
+    disown
+    echo "${G}started${N} $title  (log: $log)"
+}
+
+need_build() {
+    [ -x "$BUILD/nr-softmodem" ] && [ -x "$BUILD/nr-uesoftmodem" ] && return 0
+    echo "${R}OAI is not built${N} ($BUILD) - run ./install.sh in the oai repo"; return 1
+}
+running() { pgrep -x "$1" >/dev/null 2>&1; }
+
+status() {
+    echo "${B}5G core${N}"
+    if docker_cmd ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null | grep -E '^(oai-|mysql|ims)' ; then :; else echo "  (not running)"; fi
+    echo "${B}RAN${N}"
+    for p in nr-softmodem nr-uesoftmodem; do
+        if running "$p"; then echo "  ${G}up${N}    $p (pid $(pgrep -x "$p" | head -1))"; else echo "  down  $p"; fi
+    done
+    if ip -br addr show oaitun_ue1 >/dev/null 2>&1; then echo "  ${G}UE PDU session${N}: $(ip -br -4 addr show oaitun_ue1 | awk '{print $3}')"; fi
+    echo "${B}Radio${N}"
+    if lsusb -d 2500: >/dev/null 2>&1; then echo "  USRP B2xx on USB: $(lsusb -d 2500: | cut -d' ' -f7-)"; else echo "  no USRP B2xx on USB"; fi
+    echo "  CPU governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo ?)"
+}
+
+gnb() {   # gnb rfsim|b210 [imscope]
+    need_build || return
+    running nr-softmodem && { echo "${Y}gNB already running${N}"; return; }
+    local extra=()
+    [ "${2:-}" = imscope ] && extra+=(--imscope)
+    if [ "$1" = rfsim ]; then
+        win "OAI gNB (rfsim)" gnb-rfsim sudo --preserve-env=DISPLAY,XAUTHORITY ./nr-softmodem "${GNB_ARGS[@]}" --rfsim "${extra[@]}"
+    else
+        lsusb -d 2500: >/dev/null 2>&1 || { echo "${R}no USRP B2xx on USB${N} - plug the B210 into a USB 3 port"; return; }
+        echo "${Y}Over the air: only with a licence, or cabled + attenuated / in a shielded box.${N}"
+        read -rp "Transmit on band n78 now? [y/N] " a; [ "$a" = y ] || return
+        win "OAI gNB (B210)" gnb-b210 sudo --preserve-env=DISPLAY,XAUTHORITY ./nr-softmodem "${GNB_ARGS[@]}" -E --continuous-tx "${extra[@]}"
+    fi
+}
+
+ue_rfsim() {
+    need_build || return
+    running nr-uesoftmodem && { echo "${Y}nrUE already running${N}"; return; }
+    running nr-softmodem || echo "${Y}note:${N} start the gNB first - the UE connects to it at 127.0.0.1"
+    win "OAI nrUE (rfsim)" ue-rfsim sudo --preserve-env=DISPLAY,XAUTHORITY ./nr-uesoftmodem "${UE_ARGS[@]}" --rfsim
+}
+
+stop_ran() { sudo pkill -INT -x nr-uesoftmodem; sudo pkill -INT -x nr-softmodem; sleep 2; echo "RAN stopped"; }
+
+e2e_test() {
+    ip -br addr show oaitun_ue1 >/dev/null 2>&1 || { echo "${R}no oaitun_ue1${N} - core + gNB + UE must be up and registered"; return; }
+    local ue_ip; ue_ip="$(ip -br -4 addr show oaitun_ue1 | awk '{split($3,a,"/"); print a[1]}')"
+    echo "${B}ping ext-dn through the UE tunnel${N}"; ping -c 4 -I oaitun_ue1 "$EXT_DN"
+    if command -v iperf3 >/dev/null 2>&1; then
+        echo "${B}iperf3 downlink (10 s)${N}"
+        docker_cmd exec -d oai-ext-dn iperf3 -s -1 >/dev/null 2>&1; sleep 1
+        iperf3 -c "$EXT_DN" -B "$ue_ip" -R -t 10
+    fi
+}
+
+tune() {   # runtime only; a reboot restores the defaults
+    echo "Setting CPU governor=performance and disabling deep C-states (until reboot)..."
+    echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null
+    command -v cpupower >/dev/null && sudo cpupower idle-set -D 0 >/dev/null
+    echo "done"
+}
+
+menu() {
+    cat <<EOF
+
+${B}OpenAirInterface 5G${N}   ($OAI_SRC)
+  1) Start 5G core            6) Start nrUE (rfsim)
+  2) Stop 5G core             7) Stop gNB + nrUE
+  3) Start gNB (rfsim)        8) End-to-end test (ping + iperf3)
+  4) Start gNB (rfsim) + scope 9) Wireshark on core bridge
+  5) Start gNB (USRP B210)    t) Tune CPU for B210    l) Logs    s) Status    q) Quit
+EOF
+}
+
+status
+while true; do
+    menu; read -rp "> " c || exit 0
+    case "$c" in
+        1) compose up -d && echo "core starting - 's' shows health" ;;
+        2) compose down ;;
+        3) gnb rfsim ;;
+        4) gnb rfsim imscope ;;
+        5) gnb b210 ;;
+        6) ue_rfsim ;;
+        7) stop_ran ;;
+        8) e2e_test ;;
+        9) if command -v wireshark >/dev/null; then (wireshark -i oai-cn5g -k >/dev/null 2>&1 &); echo "Wireshark opening on oai-cn5g (NGAP, GTP-U, SBI)"
+           else echo "Wireshark is not installed: sudo apt install wireshark"; fi ;;
+        t) tune ;;
+        l) ls -lt "$LOG_DIR"; echo "open one with: less $LOG_DIR/<name>.log" ;;
+        s) status ;;
+        q|Q) exit 0 ;;
+        *) echo "?" ;;
+    esac
+done

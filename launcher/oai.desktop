@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpenAirInterface 5G
+Comment=Start/stop the OAI 5G core, gNB and nrUE (RF simulator or USRP B210)
+Exec=qterminal -e /usr/local/bin/oai-launch
+Icon=oai
+Terminal=false
+StartupNotify=true
+Categories=Science;Engineering;Network;
+Keywords=5G;NR;gNB;OAI;USRP;

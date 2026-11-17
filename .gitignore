@@ -1,0 +1,41 @@
+# secrets / credentials - never commit
+*.env
+.env
+.env.*
+secrets/
+*.key
+*.pem
+id_*
+.mcp.json
+.credentials.json
+
+# per-host config and installer downloads
+*.local.json
+*.local.conf
+downloads/
+cache/
+*.deb
+*.AppImage
+*.tar.gz
+*.tgz
+*.zip
+
+# logs / editor / OS noise
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+
+# OAI build + run artefacts (source lives in ~/src, never in this repo)
+openairinterface5g/
+ran_build/
+*.pcap
+*.pcapng
+
+# maintainer's Claude Code files - kept locally, not published
+CLAUDE.md
+.claude/
+docs/plans/

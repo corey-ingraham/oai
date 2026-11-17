@@ -1,0 +1,5 @@
+# OpenAirInterface RAN pins. Newest first; install.sh uses the first row. TAB-separated.
+# tag = upstream weekly integration tag; commit = the commit that tag points to (peeled), checked after clone.
+# The 5G core (CN5G) comes from the same tree: doc/tutorial_resources/oai-cn5g/docker-compose.yaml (images v2.2.2).
+# tag	commit	url
+2026.w46	cb98db5b5d2d95c86673821bfc9fa1be9e225b97	https://gitlab.eurecom.fr/oai/openairinterface5g.git
